@@ -1,19 +1,28 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use tauri::{AppHandle,Emitter};
+use tauri::{AppHandle, Emitter, Manager,State};
 
 use chrono::{Local,Timelike};
 use tokio::time::{interval,Duration};
 
 use voicevox_core::{blocking::{Onnxruntime,OpenJtalk,Synthesizer,VoiceModelFile},CharacterMeta,StyleMeta};
 use const_format::concatcp;
-use std::{io::{Write as _,BufReader},fs::File};
+use std::{io::{Write as _,BufReader},fs::File,sync::Mutex};
 
+struct AppState{
+    text:Mutex<String>
+}
 
-fn tts(text: &str,synth:&Synthesizer<OpenJtalk>){
+#[tauri::command]
+fn setting(readText:String,state:State<'_,AppState>){
+    println!("{}",readText.as_str());
+    *state.text.lock().unwrap() = readText;
+}
+
+fn tts(state:&AppState,synth:&Synthesizer<OpenJtalk>){
     
     const TARGET_CHARACTER_NAME: &str = "ずんだもん";
     const TARGET_STYLE_NAME: &str = "ノーマル";
-    let reading_text: &str = text;
+    let text =state.text.lock().unwrap();
     let StyleMeta{id:style_id,..}=synth
                 .metas()
                 .into_iter()
@@ -23,7 +32,7 @@ fn tts(text: &str,synth:&Synthesizer<OpenJtalk>){
                 .unwrap();
 
     eprintln!("Synthesizing");
-    let wav = &synth.tts(reading_text,style_id).perform().unwrap();
+    let wav = &synth.tts(text.as_str(),style_id).perform().unwrap();
     eprintln!("Playing the WAV");
     play(wav).unwrap();
     fn play(wav: &[u8]) -> anyhow::Result<()>{
@@ -39,25 +48,19 @@ fn tts(text: &str,synth:&Synthesizer<OpenJtalk>){
     }
 }
 
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-async fn time_check(app: AppHandle,synth:&Synthesizer<OpenJtalk>) {
+async fn time_check(app: &AppHandle,synth:&Synthesizer<OpenJtalk>,state:&AppState) {
     let mut checker = interval(Duration::from_secs(1));
     loop {
         checker.tick().await;
         let now = Local::now();
-        let minute = now.second();
+        let minute = now.minute();
         if minute == 0 {
             app.emit("1hour","一時間たった").unwrap();
-            tts("こんにちは",synth);
+            tts(state,synth);
         }
         println!("Current time: {}", now.format("%Y-%m-%d %H:%M:%S"));
     }
 }
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -78,14 +81,19 @@ pub fn run() {
             synth
                 .load_voice_model(&VoiceModelFile::open(VVM).unwrap())
                 .perform().unwrap();
+            let state = AppState{
+                text:Mutex::new("一時間".to_owned()),
+            };
+            app.manage(state);
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                time_check(app_handle,&synth).await;
+                let state= app_handle.state::<AppState>();
+                time_check(&app_handle,&synth,&state).await;
             });
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![setting])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
