@@ -9,7 +9,6 @@ window.addEventListener("DOMContentLoaded", async() => {
   const duration_unit = document.getElementById("duration-unit");
   setting.addEventListener("submit",(e)=>{
     e.preventDefault();
-    console.log("unnko")
     invoke("setting",{
       readText:reading_textarea.value,
       timeDuration:parseInt(time_duration.value),
