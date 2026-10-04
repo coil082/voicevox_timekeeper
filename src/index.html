@@ -15,9 +15,18 @@
         <h1>setting</h1>
         <h2>時報</h2>
         <form id="setting">
-          <label for="reading-text">読み上げるテキスト</label>
-          <textarea id="reading-text"></textarea>
-          <button type="submit"id="setting-submit"></button>
+          <label>読み上げるテキスト
+            <input id="reading-text">
+          </label>
+          <label>間隔
+            <input id="time-duration"type="number"min="0"max="60"value="1">
+            <select id="duration-unit">
+              <option value="hour" selected>時間</option>
+              <option value="minute">分</option>
+              <option value="second">秒</option>
+            </select>
+          </label>
+          <button type="submit"id="setting-submit">確定</button>
         </form>
       </div>
    </main>
