@@ -6,16 +6,34 @@ use tokio::time::{interval,Duration};
 
 use voicevox_core::{blocking::{Onnxruntime,OpenJtalk,Synthesizer,VoiceModelFile},CharacterMeta,StyleMeta};
 use const_format::concatcp;
-use std::{fs::File, io::{BufReader, Write as _}, sync::Mutex};
+use std::{fs, io::{BufReader, Write as _}, sync::Mutex};
+use serde::{Deserialize, Serialize};
 
+#[derive(Serialize,Deserialize)]
 struct AppState{
     read_text:Mutex<String>,
     time_duration:Mutex<u32>,
     duration_unit:Mutex<String>
 }
+#[derive(Serialize,Deserialize)]
+struct Setting{
+    read_text:String,
+    time_duration:u32,
+    duration_unit:String
+}
 
 #[tauri::command]
 fn setting(read_text:String,time_duration:u32,duration_unit:String,state:State<'_,AppState>){
+    let mut file = fs::File::create("setting.json").unwrap();
+    let mut vec:Vec<Setting> = Vec::new();
+    vec.push(Setting{
+        read_text:read_text.clone(),
+        time_duration:time_duration.clone(),
+        duration_unit:duration_unit.clone() 
+    });
+    let serialized:String = serde_json::to_string(&vec).unwrap();
+
+    file.write_all(serialized.as_bytes()).unwrap();
     println!("{0}{1}{2}",read_text.as_str(),time_duration,duration_unit);
     *state.read_text.lock().unwrap() = read_text;
     *state.time_duration.lock().unwrap() = time_duration;
@@ -45,7 +63,7 @@ fn tts(state:&AppState,synth:&Synthesizer<OpenJtalk>){
         let tempfile = &tempfile.into_temp_path();
         println!("WAV:{:?}",tempfile);
         let sink_handle = rodio::DeviceSinkBuilder::open_default_sink().unwrap();
-        let file = BufReader::new(File::open(&tempfile).unwrap());
+        let file = BufReader::new(fs::File::open(&tempfile).unwrap());
         let _player = rodio::play(&sink_handle.mixer(),file).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(5));
         Ok(())
@@ -95,16 +113,33 @@ pub fn run() {
             synth
                 .load_voice_model(&VoiceModelFile::open(VVM).unwrap())
                 .perform().unwrap();
-            let state = AppState{
-                read_text:Mutex::new("一時間".to_owned()),
-                time_duration:Mutex::new(1),
-                duration_unit:Mutex::new("hour".to_owned())
+            let input_setting = match fs::read_to_string("setting.json"){
+                Ok(text)=>{
+                    let mut deserialized: Vec<AppState> = serde_json::from_str(&text)?;
+                    deserialized.remove(0)
+                }
+                Err(e)=>{
+                    if e.kind() != std::io::ErrorKind::NotFound{
+                        panic!("error");
+                    }
+                    let new_state = AppState{
+                        read_text:Mutex::new("一時間".to_owned()),
+                        time_duration:Mutex::new(1),
+                        duration_unit:Mutex::new("hour".to_owned())
+                    };
+                    let mut vec:Vec<&AppState> = Vec::new();
+                    vec.push(&new_state);
+                    let  serialized:String = serde_json::to_string(&vec)?;
+                    let mut file = fs::File::create("setting.json")?;
+                    file.write_all(serialized.as_bytes())?;
+                    new_state
+                }
             };
-            app.manage(state);
+            app.manage(input_setting);
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let state= app_handle.state::<AppState>();
-                time_check(&app_handle,&synth,&state).await;
+                let input_setting= app_handle.state::<AppState>();
+                time_check(&app_handle,&synth,&input_setting).await;
             });
             Ok(())
         })
