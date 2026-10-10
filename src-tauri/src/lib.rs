@@ -6,16 +6,36 @@ use tokio::time::{interval,Duration};
 
 use voicevox_core::{blocking::{Onnxruntime,OpenJtalk,Synthesizer,VoiceModelFile},CharacterMeta,StyleMeta};
 use const_format::concatcp;
-use std::{fs::File, io::{BufReader, Write as _}, sync::Mutex};
+use std::{fs, io::{BufReader, Write as _}, sync::Mutex,path::PathBuf};
+use serde::{Deserialize, Serialize};
 
+#[derive(Debug,Serialize,Deserialize)]
+//state用構造体、設定だけに限らない
 struct AppState{
     read_text:Mutex<String>,
     time_duration:Mutex<u32>,
-    duration_unit:Mutex<String>
+    duration_unit:Mutex<String>,
+    setting_path: PathBuf
+}
+//jsonファイル保存用構造体、設定全部
+#[derive(Debug,Serialize,Deserialize)]
+struct Setting{
+    read_text:String,
+    time_duration:u32,
+    duration_unit:String,
 }
 
 #[tauri::command]
 fn setting(read_text:String,time_duration:u32,duration_unit:String,state:State<'_,AppState>){
+    println!("setting_path: {:?}", state.setting_path);
+    let mut vec:Vec<Setting> = Vec::new();
+    vec.push(Setting{
+        read_text:read_text.clone(),
+        time_duration:time_duration.clone(),
+        duration_unit:duration_unit.clone() ,
+    });
+    let serialized:String = serde_json::to_string(&vec).unwrap();
+    fs::write(&state.setting_path.join("setting.json"),serialized.as_bytes()).unwrap();
     println!("{0}{1}{2}",read_text.as_str(),time_duration,duration_unit);
     *state.read_text.lock().unwrap() = read_text;
     *state.time_duration.lock().unwrap() = time_duration;
@@ -45,7 +65,7 @@ fn tts(state:&AppState,synth:&Synthesizer<OpenJtalk>){
         let tempfile = &tempfile.into_temp_path();
         println!("WAV:{:?}",tempfile);
         let sink_handle = rodio::DeviceSinkBuilder::open_default_sink().unwrap();
-        let file = BufReader::new(File::open(&tempfile).unwrap());
+        let file = BufReader::new(fs::File::open(&tempfile).unwrap());
         let _player = rodio::play(&sink_handle.mixer(),file).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(5));
         Ok(())
@@ -95,16 +115,49 @@ pub fn run() {
             synth
                 .load_voice_model(&VoiceModelFile::open(VVM).unwrap())
                 .perform().unwrap();
-            let state = AppState{
-                read_text:Mutex::new("一時間".to_owned()),
-                time_duration:Mutex::new(1),
-                duration_unit:Mutex::new("hour".to_owned())
+            let app_data_dir = app.path().app_data_dir()?;
+            println!("setting path: {:?}", app_data_dir.join("setting.json"));
+            let input_setting:AppState = match fs::read_to_string(&app_data_dir.join("setting.json")){
+                Ok(text)=>{
+                    let deserialized: Vec<Setting> = serde_json::from_str(&text)?;
+                    println!("{deserialized:?}");
+                    let new_state = AppState{
+                        read_text:Mutex::new(deserialized[0].read_text.clone()),
+                        time_duration:Mutex::new(deserialized[0].time_duration.clone()),
+                        duration_unit:Mutex::new(deserialized[0].duration_unit.clone()),
+                        setting_path:app_data_dir.clone()
+                    };
+                    new_state
+                }
+                Err(e)=>{
+                    if e.kind() != std::io::ErrorKind::NotFound{
+                        println!("{e:?}");
+                        panic!("error");
+                    }
+                    let new_state = AppState{
+                        read_text:Mutex::new("一時間".to_owned()),
+                        time_duration:Mutex::new(1),
+                        duration_unit:Mutex::new("hour".to_owned()),
+                        setting_path:app_data_dir.clone()
+                    };
+                    let new_setting = Setting{
+                        read_text:new_state.read_text.lock().unwrap().clone(),
+                        duration_unit:new_state.duration_unit.lock().unwrap().clone(),
+                        time_duration:*new_state.time_duration.lock().unwrap()
+                    };
+                    let mut vec:Vec<&Setting> = Vec::new();
+                    vec.push(&new_setting);
+                    let  serialized:String = serde_json::to_string(&vec)?;
+                    std::fs::create_dir_all(&app_data_dir)?;
+                    fs::write(&app_data_dir.join("setting.json"),serialized.as_bytes())?;
+                    new_state
+                }
             };
-            app.manage(state);
+            app.manage(input_setting);
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let state= app_handle.state::<AppState>();
-                time_check(&app_handle,&synth,&state).await;
+                let input_setting= app_handle.state::<AppState>();
+                time_check(&app_handle,&synth,&input_setting).await;
             });
             Ok(())
         })

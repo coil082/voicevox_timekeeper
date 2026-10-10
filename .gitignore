@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 
 src-tauri/voicevox_core/
+src-tauri/setting.json
