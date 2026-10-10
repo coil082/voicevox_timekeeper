@@ -6,23 +6,27 @@ use tokio::time::{interval,Duration};
 
 use voicevox_core::{blocking::{Onnxruntime,OpenJtalk,Synthesizer,VoiceModelFile},CharacterMeta,StyleMeta};
 use const_format::concatcp;
-use std::{io::{Write as _,BufReader},fs::File,sync::Mutex};
+use std::{fs::File, io::{BufReader, Write as _}, sync::Mutex};
 
 struct AppState{
-    text:Mutex<String>
+    read_text:Mutex<String>,
+    time_duration:Mutex<u32>,
+    duration_unit:Mutex<String>
 }
 
 #[tauri::command]
-fn setting(readText:String,state:State<'_,AppState>){
-    println!("{}",readText.as_str());
-    *state.text.lock().unwrap() = readText;
+fn setting(read_text:String,time_duration:u32,duration_unit:String,state:State<'_,AppState>){
+    println!("{0}{1}{2}",read_text.as_str(),time_duration,duration_unit);
+    *state.read_text.lock().unwrap() = read_text;
+    *state.time_duration.lock().unwrap() = time_duration;
+    *state.duration_unit.lock().unwrap() = duration_unit;
 }
 
 fn tts(state:&AppState,synth:&Synthesizer<OpenJtalk>){
     
     const TARGET_CHARACTER_NAME: &str = "ずんだもん";
     const TARGET_STYLE_NAME: &str = "ノーマル";
-    let text =state.text.lock().unwrap();
+    let text =state.read_text.lock().unwrap();
     let StyleMeta{id:style_id,..}=synth
                 .metas()
                 .into_iter()
@@ -42,7 +46,7 @@ fn tts(state:&AppState,synth:&Synthesizer<OpenJtalk>){
         println!("WAV:{:?}",tempfile);
         let sink_handle = rodio::DeviceSinkBuilder::open_default_sink().unwrap();
         let file = BufReader::new(File::open(&tempfile).unwrap());
-        let player = rodio::play(&sink_handle.mixer(),file).unwrap();
+        let _player = rodio::play(&sink_handle.mixer(),file).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(5));
         Ok(())
     }
@@ -50,14 +54,24 @@ fn tts(state:&AppState,synth:&Synthesizer<OpenJtalk>){
 
 async fn time_check(app: &AppHandle,synth:&Synthesizer<OpenJtalk>,state:&AppState) {
     let mut checker = interval(Duration::from_secs(1));
+    let mut pre_time : Option<u32>= None;
     loop {
         checker.tick().await;
         let now = Local::now();
-        let minute = now.minute();
-        if minute == 0 {
-            app.emit("1hour","一時間たった").unwrap();
-            tts(state,synth);
+        let time = match state.duration_unit.lock().unwrap().as_str(){
+            "hour" => now.hour(),
+            "minute" => now.minute(),
+            "second" => now.second(),
+            _ => panic!("no value")
+        };
+        let duration = *state.time_duration.lock().unwrap();
+        if let Some(pre) = pre_time{
+            if time % duration == 0 && time!=pre{
+                app.emit("1hour","一時間たった").unwrap();
+                tts(state,synth);
+            }
         }
+        pre_time=Some(time);
         println!("Current time: {}", now.format("%Y-%m-%d %H:%M:%S"));
     }
 }
@@ -82,7 +96,9 @@ pub fn run() {
                 .load_voice_model(&VoiceModelFile::open(VVM).unwrap())
                 .perform().unwrap();
             let state = AppState{
-                text:Mutex::new("一時間".to_owned()),
+                read_text:Mutex::new("一時間".to_owned()),
+                time_duration:Mutex::new(1),
+                duration_unit:Mutex::new("hour".to_owned())
             };
             app.manage(state);
             let app_handle = app.handle().clone();
